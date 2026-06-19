@@ -1,0 +1,92 @@
+import os
+import threading
+from flask import Flask, request, jsonify
+from flask_cors import CORS
+from telegram import Update
+from telegram.ext import Application, CommandHandler, ContextTypes
+import pandas as pd
+
+# 🔐 إعدادات البوت وملف الإكسيل
+BOT_TOKEN = '8899159530:AAEnYvrr7Y_whfUO0T7-HeIgbWfy33oi7ME'
+EXCEL_FILE = 'تقرير_الحضور_والانصراف.xlsx'
+
+# --- الجزء الأول: سيرفر الويب واستقبال البيانات المباشرة ---
+app = Flask(__name__)
+CORS(app) # للسماح لصفحة الـ HTML بإرسال البيانات بدون مشاكل حماية
+
+def init_excel():
+    if not os.path.exists(EXCEL_FILE):
+        df = pd.DataFrame(columns=[
+            "اسم الموظف", "نوع العملية", "الموقع المستهدف", 
+            "الموقع الفعلي الحالي", "التاريخ", "الوقت", "ساعات العمل"
+        ])
+        df.to_excel(EXCEL_FILE, index=False)
+
+@app.route('/save_attendance', methods=['POST'])
+def save_attendance():
+    try:
+        data = request.json
+        init_excel()
+        
+        # تجهيز السطر بناءً على البيانات القادمة من الـ HTML مباشرة
+        new_row = {
+            "اسم الموظف": data.get("employee", "غير محدد"),
+            "نوع العملية": data.get("type", "حضور/انصراف"),
+            "الموقع المستهدف": data.get("target_location", "غير محدد"),
+            "الموقع الفعلي الحالي": data.get("actual_location", "غير محدد"),
+            "التاريخ": data.get("date", "غير محدد"),
+            "الوقت": data.get("time", "غير محدد"),
+            "ساعات العمل": data.get("hours", "---")
+        }
+        
+        # حفظ في الإكسيل فوراً
+        df = pd.read_excel(EXCEL_FILE)
+        df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
+        df.to_excel(EXCEL_FILE, index=False)
+        
+        print(f"--> [DATABASE] Successfully saved attendance for: {new_row['اسم الموظف']}")
+        return jsonify({"status": "success", "message": "Saved to database successfully"}), 200
+    except Exception as e:
+        print(f"--> [ERROR] {str(e)}")
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+def run_flask():
+    # تشغيل السيرفر المحلي على منفذ 5000
+    app.run(host='0.0.0.0', port=5000, debug=False, use_reloader=False)
+
+
+# --- الجزء الثاني: بوت تليجرام لإرسال الملف فقط ---
+async def send_excel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message and update.message.chat.type == 'private':
+        chat_id = update.message.chat_id
+        init_excel()
+        
+        df = pd.read_excel(EXCEL_FILE)
+        if len(df) == 0:
+            await update.message.reply_text("📊 قاعدة البيانات فارغة حالياً، في انتظار تسجيل حضور الموظفين.")
+            return
+            
+        await update.message.reply_text("⏳ تفضل يا فندم، جاري سحب البيانات من الداتابيز وإرسال ملف الإكسيل...")
+        with open(EXCEL_FILE, 'rb') as file:
+            await context.bot.send_document(chat_id=chat_id, document=file, filename=EXCEL_FILE)
+
+def main():
+    init_excel()
+    
+    # تشغيل سيرفر الويب في خلفية الكود (Thread مستقل)
+    flask_thread = threading.Thread(target=run_flask)
+    flask_thread.daemon = True
+    flask_thread.start()
+    
+    print("--> Database server is running on port 5000...")
+    print("--> Telegram Bot is waiting for /excel command...")
+    
+    # تشغيل البوت
+    application = Application.builder().token(BOT_TOKEN).build()
+    application.add_handler(CommandHandler("excel", send_excel_command))
+    application.add_handler(CommandHandler("start", send_excel_command))
+    
+    application.run_polling(allowed_updates=Update.ALL_TYPES)
+
+if __name__ == '__main__':
+    main()
