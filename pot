@@ -1,75 +1,48 @@
 import os
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-import pandas as pd
-from datetime import datetime
+from supabase import create_client, Client
 
 app = Flask(__name__)
-# تفعيل الـ CORS لتشغيل استقبال البيانات من أي مكان (الـ HTML)
-CORS(app)
+# تفعيل الـ CORS للسماح لـ Vercel بالاتصال بالسيرفر بدون حظر
+CORS(app, resources={r"/*": {"origins": "*"}})
 
-EXCEL_FILE = "attendance.xlsx"
-
-# دالة للتأكد من وجود ملف الإكسيل أو إنشائه بأعمدة مرتبة
-def init_excel():
-    if not os.path.exists(EXCEL_FILE):
-        df = pd.DataFrame(columns=[
-            "اسم الموظف", 
-            "نوع العملية", 
-            "الموقع المستهدف", 
-            "العنوان الفعلي الحالي", 
-            "التاريخ", 
-            "الوقت", 
-            "إجمالي ساعات العمل"
-        ])
-        df.to_excel(EXCEL_FILE, index=False)
+# إعدادات قاعدة بيانات Supabase (ستحصل عليها مجاناً عند التسجيل في supabase.com)
+SUPABASE_URL = os.environ.get("SUPABASE_URL", "https://your-project.supabase.co")
+SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "your-anon-key")
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 @app.route('/', methods=['GET'])
 def home():
-    return "سيرفر نظام الحضور والانصراف الذكي يعمل بنجاح! 🚀", 200
+    return "سيرفر YAM يعمل ويرتبط بقاعدة البيانات بنجاح! 🚀", 200
 
 @app.route('/save_attendance', methods=['POST'])
 def save_attendance():
     try:
         data = request.get_json()
         if not data:
-            return jsonify({"status": "error", "message": "No data received"}), 400
+            return jsonify({"status": "error", "message": "لم يتم استقبال بيانات"}), 400
 
-        # استخراج البيانات القادمة من صفحة الـ HTML
-        employee = data.get('employee')
-        op_type = data.get('type')
-        target_location = data.get('target_location')
-        actual_location = data.get('actual_location')
-        date_str = data.get('date')
-        time_str = data.get('time')
-        hours = data.get('hours', 'غير محدد بعد')
-
-        # تجهيز السطر الجديد لإضافته للإكسيل
-        new_row = {
-            "اسم الموظف": employee,
-            "نوع العملية": op_type,
-            "الموقع المستهدف": target_location,
-            "العنوان الفعلي الحالي": actual_location,
-            "التاريخ": date_str,
-            "الوقت": time_str,
-            "إجمالي ساعات العمل": hours
+        # تجهيز البيانات لتخزينها في جدول اسمه attendance
+        row_data = {
+            "employee_name": data.get('employee'),
+            "operation_type": data.get('type'),
+            "target_location": data.get('target_location'),
+            "actual_location": data.get('actual_location'),
+            "date": data.get('date'),
+            "time": data.get('time'),
+            "total_hours": data.get('hours', 'غير محدد بعد')
         }
 
-        init_excel()
-        
-        # قراءة البيانات الحالية وإضافة السطر الجديد
-        df = pd.read_excel(EXCEL_FILE)
-        df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
-        df.to_excel(EXCEL_FILE, index=False)
+        # إدخال السطر في Supabase
+        response = supabase.table("attendance").insert(row_data).execute()
 
-        print(f"✅ تم تسجيل {op_type} للموظف {employee} في ملف الإكسيل.")
-        return jsonify({"status": "success", "message": "Data saved to Excel successfully"}), 200
+        return jsonify({"status": "success", "message": "تم الحفظ في قاعدة البيانات بنجاح"}), 200
 
     except Exception as e:
-        print(f"❌ خطأ أثناء الحفظ: {str(e)}")
+        print(f"❌ خطأ: {str(e)}")
         return jsonify({"status": "error", "message": str(e)}), 500
 
 if __name__ == '__main__':
-    # الحصول على البورت تلقائياً من سيرفر Railway
     port = int(os.environ.get("PORT", 5000))
     app.run(host='0.0.0.0', port=port)
